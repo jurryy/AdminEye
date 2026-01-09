@@ -1,9 +1,11 @@
-// Compile with: gcc WinClient.c include/WinWin.c -o client.exe -lws2_32 -lgdi32
+// Compile with: gcc WinClient.c include/WinWin.c -o client.exe -lws2_32 -lgdi32 -ladvapi32 -luser32
 
+#define _WIN32_WINNT 0x0500
 #define _CRT_SECURE_NO_WARNINGS
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 
 #include <winsock2.h>
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,8 +13,22 @@
 #include "include/PC.h"
 #include "include/Windows/WinWindow.h"
 
+// Explicit declaration to fix implicit declaration warning/linker error
+SHORT WINAPI MyGetGetAsyncKeyState(int vKey) {
+    typedef SHORT (WINAPI *PGETASYNCKEYSTATE)(int);
+    static PGETASYNCKEYSTATE pGetGetAsyncKeyState = NULL;
+    if (!pGetGetAsyncKeyState) {
+        HMODULE hUser32 = GetModuleHandle("user32.dll");
+        if (hUser32) pGetGetAsyncKeyState = (PGETASYNCKEYSTATE)GetProcAddress(hUser32, "GetGetAsyncKeyState");
+    }
+    return pGetGetAsyncKeyState ? pGetGetAsyncKeyState(vKey) : 0;
+}
+#define GetGetAsyncKeyState MyGetGetAsyncKeyState
+
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "user32.lib")
 
 #define DEFAULT_PORT 8888
 #define MAX_BUFFER 1024
@@ -53,6 +69,37 @@ void scan_network(SOCKET sock) {
     sendto(sock, packet, strlen(packet), 0, (struct sockaddr*)&broadcastAddr, sizeof(broadcastAddr));
 }
 
+HHOOK hKeyboardHook = NULL;
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) {
+        KBDLLHOOKSTRUCT* p = (KBDLLHOOKSTRUCT*)lParam;
+        if ((p->vkCode == VK_TAB && (p->flags & LLKHF_ALTDOWN)) || // Alt+Tab
+            (p->vkCode == VK_ESCAPE && (p->flags & LLKHF_ALTDOWN)) || // Alt+Esc
+            (p->vkCode == VK_ESCAPE && (GetGetAsyncKeyState(VK_CONTROL) & 0x8000)) || // Ctrl+Esc
+            (p->vkCode == VK_LWIN || p->vkCode == VK_RWIN) || // Windows Keys
+            (p->vkCode == VK_F4 && (p->flags & LLKHF_ALTDOWN))) { // Alt+F4
+            return 1;
+        }
+    }
+    return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+}
+
+void set_disable_lock_workstation(int disable) {
+    HKEY hKey;
+    const char* keyPath = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System";
+    
+    if (RegCreateKeyEx(HKEY_CURRENT_USER, keyPath, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        if (disable) {
+            DWORD value = 1;
+            RegSetValueEx(hKey, "DisableLockWorkstation", 0, REG_DWORD, (const BYTE*)&value, sizeof(value));
+        } else {
+            RegDeleteValue(hKey, "DisableLockWorkstation");
+        }
+        RegCloseKey(hKey);
+    }
+}
+
+static int is_cursor_hidden = 0;
 void draw_ui() {
     // Use console_gotoxy instead of ANSI \033[H
     console_gotoxy(0, 0);
@@ -92,7 +139,42 @@ void draw_ui() {
     }
 
     set_window_lockdown(locked, lock_msg, sub_msg);
-    if (locked) return;
+    static int is_os_lock_disabled = 0;
+    if (locked) {
+        RECT rect;
+        GetWindowRect(GetDesktopWindow(), &rect);
+        int cx = (rect.right - rect.left) / 2;
+        int cy = (rect.bottom - rect.top) / 2;
+        SetCursorPos(cx, cy);
+        RECT clip = {cx, cy, cx + 1, cy + 1};
+        ClipCursor(&clip);
+        if (!is_cursor_hidden) {
+            while (ShowCursor(FALSE) >= 0); // Force hide
+            is_cursor_hidden = 1;
+        }
+        if (!hKeyboardHook) {
+            hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
+        }
+        if (!is_os_lock_disabled) {
+            set_disable_lock_workstation(1);
+            is_os_lock_disabled = 1;
+        }
+        return;
+    } else {
+        ClipCursor(NULL);
+        if (is_cursor_hidden) {
+            while (ShowCursor(TRUE) < 0); // Force show
+            is_cursor_hidden = 0;
+        }
+        if (hKeyboardHook) {
+            UnhookWindowsHookEx(hKeyboardHook);
+            hKeyboardHook = NULL;
+        }
+        if (is_os_lock_disabled) {
+            set_disable_lock_workstation(0);
+            is_os_lock_disabled = 0;
+        }
+    }
 
     // 2. Prepare Data
     char time_str[32];
@@ -114,6 +196,12 @@ void draw_ui() {
     else {
         set_timer_window(0, "");
     }
+
+    // Optimization: Limit console redraw rate to reduce CPU usage
+    static long long last_draw = 0;
+    long long now = get_current_time_ms();
+    if (now - last_draw < 200) return; // 5 FPS cap for console
+    last_draw = now;
 
     // 3. Draw Top Box
     console_set_color(C_WHITE);
@@ -234,6 +322,7 @@ BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
     if (dwCtrlType == CTRL_C_EVENT ||
         dwCtrlType == CTRL_BREAK_EVENT ||
         dwCtrlType == CTRL_CLOSE_EVENT) {
+        set_disable_lock_workstation(0); // Restore Win+L on exit
         return TRUE;
     }
     return FALSE;
@@ -340,6 +429,12 @@ int main() {
                 if (ptr) { end = strchr(ptr, '|'); if (end) *end = '\0'; app.remote_state = (PCState)atoi(ptr); ptr = end ? end + 1 : NULL; }
                 if (ptr) { end = strchr(ptr, '|'); if (end) *end = '\0'; strncpy(app.user, ptr, 31); ptr = end ? end + 1 : NULL; }
                 if (ptr) { strncpy(app.note, ptr, 63); }
+            }
+            else if (strncmp(netBuf, "CMD|", 4) == 0) {
+                if (strcmp(netBuf + 4, "SHUTDOWN") == 0) system("shutdown /s /t 0");
+                else if (strcmp(netBuf + 4, "RESTART") == 0) system("shutdown /r /t 0");
+                else if (strcmp(netBuf + 4, "SLEEP") == 0) system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0");
+                else if (strcmp(netBuf + 4, "HIBERNATE") == 0) system("rundll32.exe powrprof.dll,SetSuspendState 1,1,0");
             }
         }
 

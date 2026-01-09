@@ -1,6 +1,9 @@
 #ifndef WINWINDOW_H
 #define WINWINDOW_H
 
+#include "../Time.h"
+#include <windows.h>
+
 // Colors
 #define C_RESET  0
 #define C_GREEN  1
@@ -18,11 +21,7 @@ long long get_current_time_ms();
 void console_gotoxy(int x, int y);
 void console_set_color(int color_code);
 void console_clear();
-void sleep_ms(int ms);
 void toggle_console();
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 #endif

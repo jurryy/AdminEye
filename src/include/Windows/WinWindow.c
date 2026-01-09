@@ -34,10 +34,6 @@ long long get_current_time_ms() {
     return uli.QuadPart / 10000; // Convert 100ns to ms
 }
 
-void sleep_ms(int ms) {
-    Sleep(ms);
-}
-
 void console_gotoxy(int x, int y) {
     init_console_handles();
     COORD coord;

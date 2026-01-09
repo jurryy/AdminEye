@@ -43,6 +43,7 @@ typedef struct
      int64_t startedAt;
      int64_t untilTimestamp;
      int64_t runtime;
+     char pending_cmd[16];
 } PC;
 time_t getRemainingTime(PC pc);
 int64_t getTimestamp();

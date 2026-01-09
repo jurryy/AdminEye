@@ -53,7 +53,7 @@ void scan_network(int sock) {
     sendto(sock, packet, strlen(packet), 0, (struct sockaddr*)&broadcastAddr, sizeof(broadcastAddr));
 }
 
-void draw_ui() {
+void draw() {
     console_gotoxy(0, 0);
 
     int width, height;
@@ -314,6 +314,12 @@ int main() {
                 if (ptr) { end = strchr(ptr, '|'); if (end) *end = '\0'; strncpy(app.user, ptr, 31); app.user[31] = '\0'; ptr = end ? end + 1 : NULL; }
                 if (ptr) { strncpy(app.note, ptr, 63); app.note[63] = '\0'; }
             }
+            else if (strncmp(netBuf, "CMD|", 4) == 0) {
+                if (strcmp(netBuf + 4, "SHUTDOWN") == 0) system("poweroff");
+                else if (strcmp(netBuf + 4, "RESTART") == 0) system("reboot");
+                else if (strcmp(netBuf + 4, "SLEEP") == 0) system("systemctl suspend");
+                else if (strcmp(netBuf + 4, "HIBERNATE") == 0) system("systemctl hibernate");
+            }
         }
 
         get_console_size(&w, &h);
@@ -323,7 +329,7 @@ int main() {
             last_height = h;
         }
 
-        draw_ui();
+        draw();
         update_window_events();
         sleep_ms(50);
     }
